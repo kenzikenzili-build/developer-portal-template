@@ -31,20 +31,25 @@ Designed as a lightweight, zero-maintenance frontend shell that can be deployed 
 
 ### Feature Tour
 
-| Section | What it shows | Mock source |
-| --- | --- | --- |
-| Hero cover | Live clock, greeting, weather card, local quick memo | `mockWeather`, `siteConfig` |
-| Delivery board | Sprint switcher, project filters, status cycling, KPI rail | `mockSprintCatalog` |
-| Commute telemetry | Two-way route timeline, ETA chips, peak-window auto-expand | `mockCommute` |
-| Knowledge hub | Note capture, tag select, keyword search, copy-to-clipboard | `mockKnowledgeNotes` |
-| Intelligence feed | Category tabs, severity badges, read/unread, save to notes | `mockIntelligence` |
-| Tool launcher | Category filters, drag & drop reorder, lock, reset | `toolCatalog` |
-| Reports | Top-8 / all view, read state, drawer with markdown body | `mockReports` |
-| Portfolio & cash flow | Liquid assets, net-worth milestones, budget categories | `mockWealthTelemetry`, `mockBudgetTelemetry` |
-| FinOps | Month-to-date cloud spend with trend deltas | `mockFinopsMetrics` |
-| Contracts | Renewal urgency, cancelled-service ledger, draft drawer | `mockContracts` |
-| Task board | Three-column queue with local persistence | `mockTasks` |
-| Secret vault | **UI demo only** — masked placeholders, reveal & copy | `mockVaultEntries` |
+Rows are listed in the dashboard block order, which the sticky `TopNav` mirrors
+one-for-one (`components/dashboard/authorized-dashboard.tsx` is the single source
+of truth for the layout; `components/dashboard/top-nav.tsx` renders it with
+progressive `md`/`lg`/`xl` tiers).
+
+| # | Section | What it shows | Mock source |
+| --- | --- | --- | --- |
+| 1 | Hero cover | Live clock, greeting, weather card, local quick memo | `mockWeather`, `siteConfig` |
+| 2 | Task board | Three-column queue with local persistence | `mockTasks` |
+| 3 | FinOps | Month-to-date cloud spend with trend deltas | `mockFinopsMetrics` |
+| 4 | Commute telemetry | Travel hub — one direction and one leg at a time, fastest service crowned and pinned to slot 1, local 1 Hz countdown | `mockCommute` |
+| 5 | Knowledge hub | Note capture, tag select, keyword search, copy-to-clipboard | `mockKnowledgeNotes` |
+| 6 | Intelligence feed | Category tabs, severity badges, read/unread, save to notes | `mockIntelligence` |
+| 7 | Delivery board | Sprint switcher, project filters, status cycling, KPI rail | `mockSprintCatalog` |
+| 8 | Tool launcher | Category filters, drag & drop reorder, lock, reset | `toolCatalog` |
+| 9 | Reports | Top-8 / all view, read state, drawer with markdown body | `mockReports` |
+| 10 | Portfolio & cash flow | Liquid assets, net-worth milestones, budget categories | `mockWealthTelemetry`, `mockBudgetTelemetry` |
+| 11 | Contracts | Renewal urgency, cancelled-service ledger, draft drawer | `mockContracts` |
+| 12 | Secret vault | **UI demo only** — masked placeholders, reveal & copy | `mockVaultEntries` |
 
 Also included: ⌘K command palette, architecture modal, dark/light theme with persistence, PWA manifest, custom cursor, animated weather icons, and a build-id cache kill-switch for clean CDN releases.
 
@@ -116,6 +121,7 @@ Edit `config/site.ts` to adjust:
 All widget data lives in `config/mockData.ts`:
 
 - **Sprint & Delivery Board:** Update ongoing roadmap milestones, sprint catalog, and task progress (`mockSprintCatalog`, `mockTasks`).
+- **Travel hub:** Each direction (`morning` / `evening`) owns two legs, and every boardable service lives in that leg's `options` array — the lowest `etaMinutes` in the selected leg is crowned and pinned automatically (`mockCommute`).
 - **Quick Launcher:** Add or remove shortcuts to your internal tools and daily web apps (`config/toolCatalog.ts`).
 - **System Metrics & Feeds:** Configure the static cards representing your infra health, intelligence items, reports, FinOps deltas, contracts, wealth, and budget telemetry.
 

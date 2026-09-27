@@ -131,6 +131,13 @@ export const mockFinopsMetrics: FinOpsProviderMetric[] = [
 /* Commute telemetry                                                          */
 /* -------------------------------------------------------------------------- */
 
+/** One boardable service for a leg — rendered as a single ETA card. */
+export type CommuteOption = {
+  route: string
+  etaMinutes: number
+  destination: string
+}
+
 export type CommuteLeg = {
   id: string
   label: string
@@ -140,12 +147,12 @@ export type CommuteLeg = {
   minutes: number
   walkMinutes?: number
   note?: string
-}
-
-export type CommuteAlternate = {
-  route: string
-  etaMinutes: number
-  destination: string
+  /**
+   * Every service that can be boarded for THIS leg only. The hub shows one leg
+   * at a time (Leg 1 / Leg 2) and crowns the fastest option inside that leg, so
+   * options live on the leg instead of on the whole window.
+   */
+  options: CommuteOption[]
 }
 
 export type CommuteWindow = {
@@ -156,7 +163,6 @@ export type CommuteWindow = {
   destination: string
   transferHub: string
   legs: CommuteLeg[]
-  alternates: CommuteAlternate[]
   alerts: { id: string; title: string; summary: string }[]
 }
 
@@ -182,6 +188,11 @@ export const mockCommute = {
           minutes: 4,
           walkMinutes: 3,
           note: 'Frequent service, every 6 minutes at peak.',
+          options: [
+            { route: 'Route A1', etaMinutes: 4, destination: 'Riverside Interchange' },
+            { route: 'Route A1X', etaMinutes: 9, destination: 'Riverside Interchange' },
+            { route: 'Route A2', etaMinutes: 14, destination: 'Riverside Interchange' },
+          ],
         },
         {
           id: 'm-2',
@@ -191,12 +202,12 @@ export const mockCommute = {
           to: 'Core District',
           minutes: 18,
           note: 'Express trunk line, limited stops.',
+          options: [
+            { route: 'Route P7', etaMinutes: 5, destination: 'Core District' },
+            { route: 'Route P7X', etaMinutes: 11, destination: 'Core District' },
+            { route: 'Route P9', etaMinutes: 16, destination: 'Core District' },
+          ],
         },
-      ],
-      alternates: [
-        { route: 'Route P7X', etaMinutes: 5, destination: 'Core District' },
-        { route: 'Route P9', etaMinutes: 11, destination: 'Core District' },
-        { route: 'Route P12', etaMinutes: 16, destination: 'Core District' },
       ],
       alerts: [
         {
@@ -222,6 +233,11 @@ export const mockCommute = {
           to: 'Harbour Link',
           minutes: 18,
           note: 'Departures every 8 minutes until 20:00.',
+          options: [
+            { route: 'Route P7', etaMinutes: 4, destination: 'Harbour Link' },
+            { route: 'Route P7X', etaMinutes: 10, destination: 'Harbour Link' },
+            { route: 'Route P9', etaMinutes: 17, destination: 'Harbour Link' },
+          ],
         },
         {
           id: 'e-2',
@@ -232,12 +248,12 @@ export const mockCommute = {
           minutes: 6,
           walkMinutes: 3,
           note: 'Circular service, alight at the terminal stop.',
+          options: [
+            { route: 'Route B3', etaMinutes: 4, destination: 'Home Base Terminal' },
+            { route: 'Route B3', etaMinutes: 11, destination: 'Home Base Terminal' },
+            { route: 'Route B5', etaMinutes: 19, destination: 'Home Base Terminal' },
+          ],
         },
-      ],
-      alternates: [
-        { route: 'Route B3', etaMinutes: 4, destination: 'Home Base Terminal' },
-        { route: 'Route B3', etaMinutes: 11, destination: 'Home Base Terminal' },
-        { route: 'Route B5', etaMinutes: 19, destination: 'Home Base Terminal' },
       ],
       alerts: [
         {

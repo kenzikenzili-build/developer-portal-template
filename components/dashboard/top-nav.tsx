@@ -10,16 +10,46 @@ import { useUnreadReportCount } from '@/hooks/useUnreadReports'
 import { useWorkspaceAuth } from '@/hooks/useWorkspaceAuth'
 import { getDisplayName } from '@/lib/display-name'
 
-const NAV_LINKS = [
-  { href: '#overview', label: 'Overview' },
-  { href: '#sprint', label: 'Delivery' },
-  { href: '#intelligence', label: 'Intel' },
-  { href: '#tools', label: 'Tools' },
-  { href: '#reports', label: 'Reports' },
-  { href: '#portfolio', label: 'Portfolio' },
-  { href: '#finops', label: 'FinOps' },
-  { href: '#contracts', label: 'Contracts' },
-] as const
+/**
+ * Nav order mirrors the vertical block order owned by
+ * components/dashboard/authorized-dashboard.tsx (single source of truth):
+ *   Overview -> Tasks -> FinOps (Cloud Cost) -> Commute (Travel)
+ *   -> Knowledge Hub -> Intel -> Delivery -> Tools -> Reports -> Portfolio
+ *   -> Contracts -> Vault
+ *
+ * Every target section owns `id` + `scroll-mt-20`, so the smooth scrollIntoView
+ * lands just below this sticky header.
+ * `tier` reveals the longer list progressively so a 12-link bar never crowds `md`
+ * or `lg` viewports: `md` is always visible, then `lg`, then `xl`.
+ */
+type NavTier = 'md' | 'lg' | 'xl'
+
+type NavLink = {
+  href: `#${string}`
+  label: string
+  tier: NavTier
+}
+
+const NAV_LINKS: readonly NavLink[] = [
+  { href: '#overview', label: 'Overview', tier: 'md' },
+  { href: '#tasks', label: 'Tasks', tier: 'md' },
+  { href: '#finops', label: 'FinOps', tier: 'md' },
+  { href: '#commute', label: 'Commute', tier: 'md' },
+  { href: '#knowledge', label: 'Knowledge Hub', tier: 'xl' },
+  { href: '#intelligence', label: 'Intel', tier: 'lg' },
+  { href: '#sprint', label: 'Delivery', tier: 'lg' },
+  { href: '#tools', label: 'Tools', tier: 'lg' },
+  { href: '#reports', label: 'Reports', tier: 'lg' },
+  { href: '#portfolio', label: 'Portfolio', tier: 'xl' },
+  { href: '#contracts', label: 'Contracts', tier: 'lg' },
+  { href: '#vault', label: 'Vault', tier: 'xl' },
+]
+
+const NAV_TIER_CLASS: Record<NavTier, string> = {
+  md: 'inline-flex',
+  lg: 'hidden lg:inline-flex',
+  xl: 'hidden xl:inline-flex',
+}
 
 export function TopNav() {
   const { user, logout, isMockData } = useWorkspaceAuth()
@@ -70,7 +100,7 @@ export function TopNav() {
               key={link.href}
               type="button"
               onClick={() => scrollTo(link.href)}
-              className="relative rounded-lg px-2.5 py-1.5 text-sm text-slate-700 transition hover:bg-slate-900/5 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-white/5 dark:hover:text-slate-100"
+              className={`relative items-center rounded-lg px-2.5 py-1.5 text-sm text-slate-700 transition hover:bg-slate-900/5 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-white/5 dark:hover:text-slate-100 ${NAV_TIER_CLASS[link.tier]}`}
             >
               {link.label}
               {link.href === '#reports' && unreadReports > 0 ? (

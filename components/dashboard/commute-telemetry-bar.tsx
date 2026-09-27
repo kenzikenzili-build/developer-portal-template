@@ -1,11 +1,50 @@
 'use client'
 
-import { AlertTriangle, ChevronDown, ChevronUp, Footprints, Navigation, RefreshCw, X } from 'lucide-react'
+/**
+ * CommuteTelemetryBar — Travel · Commute Telemetry Hub.
+ *
+ * Layout contract — only ONE "direction × leg" is on screen at a time:
+ *   1. The outermost control is just 【Morning】/【Evening】: a single direction
+ *      renders instead of two columns side by side. The default direction comes
+ *      from the clock (`mockCommute.peakHours`); a manual pick is kept while the
+ *      clock has no opinion or is still inside the same window.
+ *   2. A 【Leg 1】/【Leg 2】 segmented control on the right of the control row
+ *      switches the route list for the selected leg only.
+ *   3. The fastest-arriving option is pinned to the first slot and crowned with a
+ *      full-box highlight (emerald border + glow + tinted background).
+ *   4. Local 1 Hz countdown between polls; the feed re-seeds every 30 s.
+ *
+ * Data contract: everything renders from `mockCommute` in config/mockData.ts.
+ * No backend, no private feed, no hardcoded personal route.
+ */
+
+import { AlertTriangle, Navigation, RefreshCw, Sunrise, Sunset, X, Zap } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
-import { mockCommute } from '@/config/mockData'
+import { CommuteRouteCard } from '@/components/dashboard/commute-route-card'
+import { mockCommute, type CommuteWindow } from '@/config/mockData'
 import { siteConfig } from '@/config/site'
 import { cn } from '@/lib/utils'
+
+type CommuteDirection = CommuteWindow['id']
+type LegNumber = 1 | 2
+
+const DIRECTION_ORDER: readonly CommuteDirection[] = ['morning', 'evening']
+const LEG_NUMBERS: readonly LegNumber[] = [1, 2]
+const POLL_INTERVAL_MS = 30_000
+const CLOCK_INTERVAL_MS = 30_000
+const TICK_INTERVAL_MS = 1_000
+
+type LegOptionSnapshot = {
+  /** Stable React key for the option. */
+  key: string
+  direction: CommuteDirection
+  legIndex: number
+  route: string
+  destination: string
+  /** Absolute arrival timestamp this option counts down to. */
+  targetMs: number
+}
 
 function addMinutesToClockTime(baseTime: string, addMins: number): string {
   const parts = baseTime.split(':')
@@ -35,85 +74,183 @@ function clockNow(): string {
   })
 }
 
-function isPeakWindow(date: Date): boolean {
-  let hours = date.getHours() + date.getMinutes() / 60
+function formatClockTime(ms: number): string {
+  return new Date(ms).toLocaleTimeString(siteConfig.locale, {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+    timeZone: siteConfig.timeZone,
+  })
+}
+
+/** Minutes-of-day in the configured timezone; falls back to the browser clock. */
+function minutesOfDay(date: Date): number {
   try {
     const zoned = new Date(date.toLocaleString(siteConfig.locale, { timeZone: siteConfig.timeZone }))
-    if (!Number.isNaN(zoned.getTime())) {
-      hours = zoned.getHours() + zoned.getMinutes() / 60
-    }
+    if (!Number.isNaN(zoned.getTime())) return zoned.getHours() * 60 + zoned.getMinutes()
   } catch {
     // Fall back to the browser clock.
   }
+  return date.getHours() * 60 + date.getMinutes()
+}
+
+/**
+ * Direction the clock suggests — `morning` inside the inbound window,
+ * `evening` inside the outbound window, `null` when the clock has no opinion.
+ */
+export function defaultCommuteDirection(date: Date): CommuteDirection | null {
+  const minutes = minutesOfDay(date)
   const { morning, evening } = mockCommute.peakHours
-  return (hours >= morning[0] && hours < morning[1]) || (hours >= evening[0] && hours < evening[1])
+  if (minutes >= morning[0] * 60 && minutes < morning[1] * 60) return 'morning'
+  if (minutes >= evening[0] * 60 && minutes < evening[1] * 60) return 'evening'
+  return null
+}
+
+/** Small deterministic wobble so the demo feed looks alive between polls. */
+function jitterEta(baseMinutes: number, seed: number): number {
+  return Math.max(1, baseMinutes + (((seed % 4) + 4) % 4) - 1)
+}
+
+/** Remaining whole minutes until `targetMs`, floored at zero. */
+function remainingMinutes(targetMs: number, now: number): number {
+  return Math.max(0, Math.ceil((targetMs - now) / 60_000))
 }
 
 export function CommuteTelemetryBar() {
+  const [mounted, setMounted] = useState(false)
   const [tick, setTick] = useState(0)
-  const [loading, setLoading] = useState(false)
+  const [now, setNow] = useState(0)
+  const [isRefreshing, setIsRefreshing] = useState(false)
   const [lastUpdated, setLastUpdated] = useState('')
-  const [isInPeakWindow, setIsInPeakWindow] = useState(false)
-  const [manualOverride, setManualOverride] = useState<{ window: boolean; expanded: boolean } | null>(
-    null,
-  )
   const [dismissedAlerts, setDismissedAlerts] = useState<string[]>([])
 
-  const isExpanded =
-    manualOverride && manualOverride.window === isInPeakWindow
-      ? manualOverride.expanded
-      : isInPeakWindow
+  /*
+   * Direction master switch: clock default + a manual override that expires when
+   * the clock moves into a different window. The initial value is intentionally
+   * null so the static export and the browser cannot disagree about the time.
+   */
+  const [clockDirection, setClockDirection] = useState<CommuteDirection | null>(null)
+  const [manualDirection, setManualDirection] = useState<{
+    slot: CommuteDirection | null
+    value: CommuteDirection
+  } | null>(null)
+  const [legNumber, setLegNumber] = useState<LegNumber>(1)
+
+  useEffect(() => setMounted(true), [])
 
   useEffect(() => {
-    const sync = () => setIsInPeakWindow(isPeakWindow(new Date()))
-    sync()
-    const timer = window.setInterval(sync, 30_000)
+    const syncClock = () => setClockDirection(defaultCommuteDirection(new Date()))
+    syncClock()
+    const timer = window.setInterval(syncClock, CLOCK_INTERVAL_MS)
     return () => window.clearInterval(timer)
   }, [])
 
-  const refresh = useCallback(async () => {
-    setLoading(true)
-    await new Promise((resolve) => window.setTimeout(resolve, 300))
+  const refresh = useCallback(() => {
+    setIsRefreshing(true)
     setTick((value) => value + 1)
     setLastUpdated(clockNow())
-    setLoading(false)
+    setNow(Date.now())
+    setIsRefreshing(false)
   }, [])
 
   useEffect(() => {
-    void refresh()
-    const interval = window.setInterval(() => void refresh(), 40_000)
-    return () => window.clearInterval(interval)
+    refresh()
+    const poll = window.setInterval(() => refresh(), POLL_INTERVAL_MS)
+    return () => window.clearInterval(poll)
   }, [refresh])
 
-  const windows = useMemo(
+  // 1 Hz local countdown so the ETAs tick between polls without touching the feed.
+  useEffect(() => {
+    const ticker = window.setInterval(() => setNow(Date.now()), TICK_INTERVAL_MS)
+    return () => window.clearInterval(ticker)
+  }, [])
+
+  /**
+   * Every option of every leg, with an absolute arrival timestamp seeded from
+   * `mockCommute` on each poll. This is the only place the mock numbers are
+   * applied, so the UI stays a pure function of config/mockData.ts.
+   */
+  const snapshots = useMemo(() => {
+    /** `snapshots[direction][legIndex]` — one slice per direction and leg. */
+    const map: Record<string, LegOptionSnapshot[][]> = {}
+    for (const directionWindow of mockCommute.windows) {
+      map[directionWindow.id] = directionWindow.legs.map((leg, legIndex) =>
+        leg.options.map((option, optionIndex) => {
+          const minutes = jitterEta(option.etaMinutes, tick + legIndex * 3 + optionIndex)
+          return {
+            key: `${directionWindow.id}:${leg.id}:${optionIndex}`,
+            direction: directionWindow.id,
+            legIndex,
+            route: option.route,
+            destination: option.destination,
+            targetMs: Date.now() + minutes * 60_000,
+          }
+        }),
+      )
+    }
+    return map
+  }, [tick])
+
+  const activeDirection: CommuteDirection =
+    manualDirection && (clockDirection === null || manualDirection.slot === clockDirection)
+      ? manualDirection.value
+      : (clockDirection ?? 'morning')
+
+  const activeWindow =
+    mockCommute.windows.find((window) => window.id === activeDirection) ?? mockCommute.windows[0]
+
+  const legIndex = legNumber - 1
+  const activeLeg = activeWindow.legs[legIndex]
+  const legSnapshots = snapshots[activeDirection]?.[legIndex] ?? []
+
+  const selectDirection = (next: CommuteDirection) => {
+    setManualDirection({ slot: clockDirection, value: next })
+    setLegNumber(1)
+  }
+
+  const options = useMemo(
     () =>
-      mockCommute.windows.map((window) => {
-        const alternates = window.alternates.map((alt, index) => {
-          const jitter = ((tick + index * 3) % 4) - 1
-          const minutes = Math.max(1, alt.etaMinutes + jitter)
-          return { ...alt, etaMinutes: minutes, eta: addMinutesToClockTime(clockNow(), minutes) }
-        })
-        const totalMinutes = window.legs.reduce(
-          (sum, leg) => sum + leg.minutes + (leg.walkMinutes ?? 0),
-          0,
-        )
-        const departIn = alternates[0]?.etaMinutes ?? 0
-        const arrival = addMinutesToClockTime(clockNow(), departIn + totalMinutes)
-        return { window, alternates, totalMinutes, arrival }
-      }),
-    [tick],
+      legSnapshots.map((snapshot, index) => ({
+        snapshot,
+        minutes: now ? remainingMinutes(snapshot.targetMs, now) : activeLeg.options[index].etaMinutes,
+      })),
+    [activeLeg.options, legSnapshots, now],
   )
 
-  const activeAlert = mockCommute.windows
-    .flatMap((window) => window.alerts)
-    .find((alert) => !dismissedAlerts.includes(alert.id))
+  /** Fastest option in the selected leg — always crowned and pinned to slot 1. */
+  const fastest = useMemo(
+    () =>
+      options.reduce<(typeof options)[number] | null>(
+        (best, current) => (best === null || current.minutes < best.minutes ? current : best),
+        null,
+      ),
+    [options],
+  )
+
+  /** Fastest first; every other option keeps its configured order. */
+  const orderedOptions = useMemo(() => {
+    if (!fastest) return options
+    return [fastest, ...options.filter((entry) => entry.snapshot.key !== fastest.snapshot.key)]
+  }, [fastest, options])
+
+  const nextMinutesFor = (key: string): number | undefined => {
+    const index = options.findIndex((entry) => entry.snapshot.key === key)
+    return options.slice(index + 1)[0]?.minutes
+  }
+
+  const totalMinutes = activeWindow.legs
+    .slice(0, legNumber)
+    .reduce((sum, leg) => sum + leg.minutes + (leg.walkMinutes ?? 0), 0)
+  const arrival = addMinutesToClockTime(clockNow(), (fastest?.minutes ?? 0) + totalMinutes)
+
+  const activeAlert = activeWindow.alerts.find((alert) => !dismissedAlerts.includes(alert.id))
 
   return (
-    <section id="commute" className="w-full scroll-mt-20 space-y-3">
+    <section id="commute" className="w-full scroll-mt-20 space-y-3" aria-label="Travel commute hub">
       {activeAlert ? (
-        <div className="flex items-center justify-between gap-3 rounded-xl border border-rose-300 bg-rose-50 px-4 py-2.5 text-rose-900 shadow-xs">
+        <div className="flex items-center justify-between gap-3 rounded-xl border border-rose-300 bg-rose-50 px-4 py-2.5 text-rose-900 shadow-xs dark:border-rose-900/60 dark:bg-rose-950/40 dark:text-rose-200">
           <div className="flex items-center gap-2.5">
-            <AlertTriangle className="size-4 shrink-0 animate-pulse text-rose-600" />
+            <AlertTriangle className="size-4 shrink-0 animate-pulse text-rose-600 dark:text-rose-400" />
             <p className="text-xs font-medium">
               <span className="font-bold">{activeAlert.title}</span> — {activeAlert.summary}
             </p>
@@ -121,7 +258,7 @@ export function CommuteTelemetryBar() {
           <button
             type="button"
             onClick={() => setDismissedAlerts((prev) => [...prev, activeAlert.id])}
-            className="text-rose-500 transition hover:text-rose-800"
+            className="text-rose-500 transition hover:text-rose-800 dark:text-rose-400 dark:hover:text-rose-200"
             aria-label="Dismiss service alert"
           >
             <X className="size-4" />
@@ -130,140 +267,182 @@ export function CommuteTelemetryBar() {
       ) : null}
 
       <div className="rounded-2xl border border-slate-300 bg-white p-4 shadow-sm md:p-5 dark:border-slate-800 dark:bg-slate-900/90">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="flex items-start gap-3">
+        <header className="mb-4 flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 pb-3.5 dark:border-slate-800">
+          <div className="flex items-center gap-2.5">
             <span className="grid size-10 shrink-0 place-items-center rounded-xl border border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200">
               <Navigation className="size-5" />
             </span>
-            <div>
+            <div className="flex flex-col gap-0.5">
               <h2 className="font-mono text-[10px] font-bold uppercase tracking-[0.18em] text-slate-900 md:text-xs dark:text-slate-300">
-                COMMUTE TELEMETRY
+                COMMUTE TELEMETRY HUB
               </h2>
-              <p className="mt-1 text-sm font-bold tracking-tight text-slate-900 dark:text-slate-100">
-                Two-way service health
-              </p>
-              <p className="mt-0.5 font-mono text-[11px] text-slate-500 dark:text-slate-400">
-                Peak windows {mockCommute.peakWindowsLabel} ·{' '}
-                {lastUpdated ? `updated ${lastUpdated}` : 'syncing…'}
-              </p>
+              <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                Peak windows {mockCommute.peakWindowsLabel} · one direction, one leg at a time
+              </span>
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-3">
+            <span className="inline-flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-widest text-slate-500 dark:text-slate-400">
+              <span
+                className={cn(
+                  'inline-flex size-2 rounded-full',
+                  mounted ? 'animate-pulse bg-emerald-500' : 'bg-slate-300 dark:bg-slate-700',
+                )}
+              />
+              {lastUpdated ? `Synced ${lastUpdated}` : 'Idle'}
+            </span>
             <button
               type="button"
-              onClick={() => void refresh()}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
-              title="Re-simulate the ETA feed"
+              onClick={refresh}
+              disabled={isRefreshing}
+              className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-bold text-slate-900 shadow-xs transition-all hover:bg-slate-100 active:scale-95 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:hover:bg-slate-700"
+              title="Re-seed the mock telemetry feed"
             >
-              <RefreshCw className={cn('size-3.5', loading && 'animate-spin')} />
-              {loading ? 'Syncing…' : 'Refresh'}
-            </button>
-            <button
-              type="button"
-              onClick={() => setManualOverride({ window: isInPeakWindow, expanded: !isExpanded })}
-              aria-expanded={isExpanded}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
-            >
-              {isExpanded ? <ChevronUp className="size-3.5" /> : <ChevronDown className="size-3.5" />}
-              {isExpanded ? 'Collapse' : 'Expand'}
+              <RefreshCw className={cn('size-3.5', isRefreshing && 'animate-spin')} />
+              {isRefreshing ? 'Syncing…' : 'Sync'}
             </button>
           </div>
-        </div>
+        </header>
 
-        <div className="mt-4 grid gap-3 lg:grid-cols-2">
-          {windows.map(({ window, alternates, totalMinutes, arrival }) => (
-            <article
-              key={window.id}
-              className="rounded-2xl border border-slate-200 bg-slate-50/60 p-3.5 md:p-4 dark:border-slate-800 dark:bg-slate-950/40"
+        <div className="flex flex-col gap-4">
+          {/* 1 · Direction master toggle — only the active direction renders below. */}
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div
+              className="grid flex-1 grid-cols-1 gap-2 sm:grid-cols-2"
+              role="group"
+              aria-label="Travel direction"
             >
-              <div className="flex flex-wrap items-start justify-between gap-2">
-                <div className="min-w-0">
-                  <p className="text-sm font-bold tracking-tight text-slate-900 dark:text-slate-100">
-                    {window.title}
-                  </p>
-                  <p className="mt-0.5 truncate text-xs text-slate-600 dark:text-slate-400">
-                    {window.origin} → {window.destination}
-                  </p>
-                </div>
-                <span className="rounded-full border border-emerald-300 bg-emerald-50 px-2.5 py-0.5 font-mono text-[10px] font-bold text-emerald-700 dark:border-emerald-500/40 dark:bg-emerald-950/40 dark:text-emerald-200">
-                  ETA {arrival}
-                </span>
-              </div>
-
-              <div className="mt-3 flex flex-wrap gap-1.5">
-                {alternates.map((alt) => (
-                  <span
-                    key={`${window.id}-${alt.route}-${alt.etaMinutes}`}
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 py-1 font-mono text-[11px] text-slate-700 shadow-xs dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
-                    title={`Next ${alt.route} toward ${alt.destination}`}
+              {DIRECTION_ORDER.map((direction) => {
+                const directionWindow = mockCommute.windows.find((entry) => entry.id === direction)
+                if (!directionWindow) return null
+                const isActive = activeDirection === direction
+                const Icon = direction === 'morning' ? Sunrise : Sunset
+                return (
+                  <button
+                    key={direction}
+                    type="button"
+                    onClick={() => selectDirection(direction)}
+                    aria-pressed={isActive}
+                    className={cn(
+                      'flex cursor-pointer items-center gap-3 rounded-xl border-2 px-4 py-3 text-left transition',
+                      isActive
+                        ? 'border-slate-900 bg-slate-900 text-white shadow-sm dark:border-slate-100 dark:bg-slate-100 dark:text-slate-900'
+                        : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300 dark:hover:border-slate-700 dark:hover:bg-slate-800/60',
+                    )}
                   >
-                    <span className="font-bold">{alt.route}</span>
-                    <span className="text-slate-400">{alt.eta}</span>
-                    <span className="text-emerald-600 dark:text-emerald-400">
-                      {alt.etaMinutes}′
-                    </span>
-                  </span>
-                ))}
-              </div>
-
-
-              <ol className="mt-4 space-y-2.5">
-                {window.legs.map((leg, index) => {
-                  const offset = window.legs
-                    .slice(0, index)
-                    .reduce((sum, item) => sum + item.minutes + (item.walkMinutes ?? 0), 0)
-                  const start = addMinutesToClockTime(
-                    clockNow(),
-                    (alternates[0]?.etaMinutes ?? 0) + offset,
-                  )
-                  const end = addMinutesToClockTime(start, leg.minutes)
-                  return (
-                    <li key={leg.id} className="flex gap-3">
-                      <span className="mt-1 grid size-6 shrink-0 place-items-center rounded-full border border-slate-300 bg-white font-mono text-[10px] font-bold text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200">
-                        {index + 1}
+                    <Icon
+                      className={cn(
+                        'size-5 shrink-0',
+                        isActive
+                          ? 'text-white dark:text-slate-900'
+                          : 'text-slate-400 dark:text-slate-500',
+                      )}
+                    />
+                    <span className="flex min-w-0 flex-col">
+                      <span className="truncate text-base font-black tracking-tight">
+                        {directionWindow.title}
                       </span>
-                      <div className="min-w-0 flex-1">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="text-xs font-semibold text-slate-900 dark:text-slate-100">
-                            {leg.label}
-                          </span>
-                          <span className="rounded border border-slate-200 bg-white px-1.5 py-0.5 font-mono text-[10px] text-slate-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
-                            {leg.route}
-                          </span>
-                        </div>
-                        <p className="mt-0.5 text-[11px] text-slate-600 dark:text-slate-400">
-                          {leg.from} → {leg.to} · {leg.minutes} min · {start}–{end}
-                        </p>
-                        {leg.walkMinutes ? (
-                          <p className="mt-0.5 inline-flex items-center gap-1 text-[11px] text-amber-700 dark:text-amber-300">
-                            <Footprints className="size-3" />
-                            {leg.walkMinutes} min walk
-                          </p>
-                        ) : null}
-                        {leg.note ? (
-                          <p className="mt-0.5 text-[11px] italic text-slate-500 dark:text-slate-500">
-                            {leg.note}
-                          </p>
-                        ) : null}
-                      </div>
-                    </li>
+                      <span
+                        className={cn(
+                          'truncate font-mono text-[11px]',
+                          isActive
+                            ? 'text-white/70 dark:text-slate-900/70'
+                            : 'text-slate-500 dark:text-slate-400',
+                        )}
+                      >
+                        {directionWindow.subtitle}
+                      </span>
+                    </span>
+                  </button>
+                )
+              })}
+            </div>
+
+            {/* 2 · Leg sub-toggle — switches only the route list of the active direction. */}
+            <div className="flex shrink-0 items-center gap-2">
+              <span className="hidden font-mono text-[10px] font-bold uppercase tracking-widest text-slate-400 sm:inline dark:text-slate-500">
+                Leg
+              </span>
+              <div
+                className="inline-flex rounded-lg border border-slate-200 bg-slate-100 p-1 dark:border-slate-800 dark:bg-slate-800/70"
+                role="group"
+                aria-label="Leg switcher"
+              >
+                {LEG_NUMBERS.map((num) => {
+                  const isActive = legNumber === num
+                  return (
+                    <button
+                      key={num}
+                      type="button"
+                      onClick={() => setLegNumber(num)}
+                      aria-pressed={isActive}
+                      className={cn(
+                        'cursor-pointer rounded-md px-4 py-2 text-xs font-black transition',
+                        isActive
+                          ? 'bg-white text-slate-900 shadow-xs dark:bg-slate-950 dark:text-slate-100'
+                          : 'text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-slate-100',
+                      )}
+                    >
+                      Leg {num}
+                    </button>
                   )
                 })}
-              </ol>
+              </div>
+            </div>
+          </div>
 
-              <p className="mt-3 border-t border-slate-200 pt-2.5 font-mono text-[10px] uppercase tracking-widest text-slate-500 dark:border-slate-800 dark:text-slate-400">
-                {window.transferHub} interchange · {totalMinutes} min door-to-door
-              </p>
-            </article>
-          ))}
+          {/* Selected "direction × leg" summary, including the crowned service. */}
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 dark:border-slate-800 dark:bg-slate-900/60">
+            <div className="flex min-w-0 flex-col">
+              <span className="truncate text-xs font-black text-slate-900 dark:text-slate-100">
+                {activeWindow.origin} → {activeWindow.destination} · via {activeWindow.transferHub}
+              </span>
+              <span className="truncate font-mono text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                {activeLeg.label} · {totalMinutes} min door-to-door · arrive {arrival}
+              </span>
+            </div>
+            {fastest ? (
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-600 px-2.5 py-1 font-mono text-[11px] font-black text-white shadow-xs">
+                <Zap className="size-3" />
+                FASTEST {fastest.snapshot.route} · {fastest.minutes} min
+              </span>
+            ) : null}
+          </div>
+
+          {/* 3 · Options for the selected leg — fastest pinned first and crowned. */}
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
+            {orderedOptions.map(({ snapshot, minutes }) => (
+              <CommuteRouteCard
+                key={snapshot.key}
+                legNumber={legNumber}
+                legLabel={activeLeg.label}
+                routeCode={snapshot.route}
+                from={activeLeg.from}
+                to={activeLeg.to}
+                destination={snapshot.destination}
+                etaMinutes={minutes}
+                eta={formatClockTime(snapshot.targetMs)}
+                nextEtaMinutes={nextMinutesFor(snapshot.key)}
+                highlight={fastest?.snapshot.key === snapshot.key}
+              />
+            ))}
+          </div>
+
+          {activeLeg.note ? (
+            <p className="flex flex-wrap items-center gap-3 border-t border-slate-200 pt-2.5 text-[11px] italic text-slate-500 dark:border-slate-800 dark:text-slate-400">
+              <span>{activeLeg.note}</span>
+              {activeLeg.walkMinutes ? (
+                <span>{activeLeg.walkMinutes} min walk at the interchange</span>
+              ) : null}
+            </p>
+          ) : null}
+
+          <p className="font-mono text-[10px] uppercase tracking-widest text-slate-400 dark:text-slate-500">
+            Mock feed · edit config/mockData.ts to model your own route
+          </p>
         </div>
-
-        <p className="mt-4 font-mono text-[10px] uppercase tracking-widest text-slate-400 dark:text-slate-500">
-          Mock data · Edit config/mockData.ts to model your own route
-        </p>
       </div>
     </section>
   )
 }
-

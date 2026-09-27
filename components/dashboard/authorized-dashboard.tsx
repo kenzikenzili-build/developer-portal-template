@@ -49,17 +49,26 @@ export default function AuthorizedDashboard(_props: AuthorizedDashboardProps) {
       <TopNav />
       <SprintCatalogProvider>
         <div className="mx-auto flex min-w-0 max-w-[1400px] flex-col gap-4 px-4 py-4 md:gap-6 md:px-5 md:py-6 lg:gap-8 lg:px-8 lg:py-8">
+          {/*
+            Vertical block order — the single source of truth for the page layout,
+            mirrored by `NAV_LINKS` in components/dashboard/top-nav.tsx:
+              1 · Overview  — hero cover with clock, weather and quick memo.
+              2 · Tasks     — queue pinned as the first block under the hero.
+              3 · FinOps    — cloud spend telemetry (Cloud Cost).
+              4 · Travel    — Commute Telemetry Hub.
+              5 · Everything else follows in the original order.
+          */}
           <HeroCover />
-          <SprintTrackerCard />
+          <TaskBoard />
+          <FinOpsSection />
           <CommuteTelemetryBar />
           <KnowledgeHubSection />
           <IntelligenceFeed />
+          <SprintTrackerCard />
           <ToolsSection />
           <ReportsSection />
           <PortfolioSection />
-          <FinOpsSection />
           <ContractsSection />
-          <TaskBoard />
           <SecretVault />
         </div>
       </SprintCatalogProvider>

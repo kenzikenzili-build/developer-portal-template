@@ -4,6 +4,8 @@ A clean, decoupled, and production-grade developer control center built with **N
 
 Designed as a lightweight, zero-maintenance frontend shell that can be deployed to any static host (AWS S3 + CloudFront, Cloudflare Pages, Vercel, GitHub Pages, or plain Nginx) without requiring a backend runtime, a database, or a single API key.
 
+![Developer Mission Control Preview](.github/assets/preview.png)
+
 ---
 
 ## Table of Contents

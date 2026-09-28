@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# ─────────────────────────────────────────────────────────────────────────────
+# git pre-commit hook — 憑證外洩守門員（由 scripts/install-git-hooks.sh 安裝）
+#
+# 為什麼：憑證一旦 commit，就會進 git 歷史；若 push 到遠端（GitHub）就再也
+# 收不回來，只能輪替。所以在 commit 之前用 scripts/scan_secrets.sh 掃描
+# 「即將被提交的內容」，發現疑似憑證就中止。
+#
+# 緊急繞過（不建議，請改為修掉憑證）：
+#   SKIP_SECRET_SCAN=1 git commit -m "..."
+# ─────────────────────────────────────────────────────────────────────────────
+set -uo pipefail
+
+if [[ "${SKIP_SECRET_SCAN:-0}" == "1" ]]; then
+  echo "[pre-commit] ⚠️  SKIP_SECRET_SCAN=1 → 略過憑證掃描（請自負風險）" >&2
+  exit 0
+fi
+
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+SCANNER="$REPO_ROOT/scripts/scan_secrets.sh"
+[[ -x "$SCANNER" ]] || { echo "[pre-commit] 找不到 $SCANNER，略過掃描" >&2; exit 0; }
+
+if ! "$SCANNER" --staged; then
+  echo >&2
+  echo "[pre-commit] 🚫 提交已被阻止：偵測到疑似憑證。" >&2
+  echo "            請把真憑證移到 .env（600）/ SSM，並撤銷已外洩的金鑰。" >&2
+  exit 1
+fi
+exit 0

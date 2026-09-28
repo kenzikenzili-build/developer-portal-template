@@ -241,7 +241,8 @@ export function CommuteTelemetryBar() {
   const totalMinutes = activeWindow.legs
     .slice(0, legNumber)
     .reduce((sum, leg) => sum + leg.minutes + (leg.walkMinutes ?? 0), 0)
-  const arrival = addMinutesToClockTime(clockNow(), (fastest?.minutes ?? 0) + totalMinutes)
+  // Only derive a journey time when a service exists to complete the leg.
+  const arrival = fastest ? addMinutesToClockTime(clockNow(), fastest.minutes + totalMinutes) : null
 
   const activeAlert = activeWindow.alerts.find((alert) => !dismissedAlerts.includes(alert.id))
 
@@ -399,7 +400,9 @@ export function CommuteTelemetryBar() {
                 {activeWindow.origin} → {activeWindow.destination} · via {activeWindow.transferHub}
               </span>
               <span className="truncate font-mono text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-                {activeLeg.label} · {totalMinutes} min door-to-door · arrive {arrival}
+                {arrival
+                  ? `${activeLeg.label} · ${totalMinutes} min door-to-door · arrive ${arrival}`
+                  : activeLeg.label}
               </span>
             </div>
             {fastest ? (
@@ -411,23 +414,34 @@ export function CommuteTelemetryBar() {
           </div>
 
           {/* 3 · Options for the selected leg — fastest pinned first and crowned. */}
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
-            {orderedOptions.map(({ snapshot, minutes }) => (
-              <CommuteRouteCard
-                key={snapshot.key}
-                legNumber={legNumber}
-                legLabel={activeLeg.label}
-                routeCode={snapshot.route}
-                from={activeLeg.from}
-                to={activeLeg.to}
-                destination={snapshot.destination}
-                etaMinutes={minutes}
-                eta={formatClockTime(snapshot.targetMs)}
-                nextEtaMinutes={nextMinutesFor(snapshot.key)}
-                highlight={fastest?.snapshot.key === snapshot.key}
-              />
-            ))}
-          </div>
+          {orderedOptions.length > 0 ? (
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
+              {orderedOptions.map(({ snapshot, minutes }) => (
+                <CommuteRouteCard
+                  key={snapshot.key}
+                  legNumber={legNumber}
+                  legLabel={activeLeg.label}
+                  routeCode={snapshot.route}
+                  from={activeLeg.from}
+                  to={activeLeg.to}
+                  destination={snapshot.destination}
+                  etaMinutes={minutes}
+                  eta={formatClockTime(snapshot.targetMs)}
+                  nextEtaMinutes={nextMinutesFor(snapshot.key)}
+                  highlight={fastest?.snapshot.key === snapshot.key}
+                />
+              ))}
+            </div>
+          ) : (
+            <div className="rounded-xl border border-dashed border-slate-300 px-4 py-6 text-center dark:border-slate-700">
+              <p className="text-xs font-bold text-slate-600 dark:text-slate-300">
+                No services modelled for this leg
+              </p>
+              <p className="mt-1 font-mono text-[10px] uppercase tracking-widest text-slate-400 dark:text-slate-500">
+                Add entries to options in config/mockData.ts
+              </p>
+            </div>
+          )}
 
           {activeLeg.note ? (
             <p className="flex flex-wrap items-center gap-3 border-t border-slate-200 pt-2.5 text-[11px] italic text-slate-500 dark:border-slate-800 dark:text-slate-400">
